@@ -1,0 +1,45 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logix / generated artifacts
+*.ACD.BAK
+*.acd.bak
+*.bak
+*_tmp*.L5X
+_tmp_export.L5X
+
+# Local test / scratch outputs
+_test_*.py
+probe_*.py
+tmp_*.py
+PCI0000_TEST_WORK.acd
+PCI0000_TEST_WORK.acd.BAK
+test_project.ACD
+test_project.ACD.BAK
+*.log
+
+# Optional local MCP config overrides
+claude_config.local.json
+claude_config.json

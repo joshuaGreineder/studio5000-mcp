@@ -1,0 +1,283 @@
+"""Project I/O tools: open / save / export / read / convert / create / processor list.
+
+Every tool is registered against the shared ``mcp`` instance from
+``logix_mcp._common`` via ``@mcp.tool()`` so ``logix_mcp.server`` auto-loads
+them through its eager-import sweep.
+
+Tool bodies follow the universal pattern:
+
+* run all ``preflight_*`` validators first and short-circuit on rejection,
+* wrap the SDK work in ``await _run("<tool_name>", _do)`` so the layered
+  error handler converts SDK / OS exceptions into ``[FAIL] ...`` blocks,
+* return ``[OK] ...`` strings on success.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from logix_designer_sdk import LogixProject  # pyright: ignore[reportMissingImports]
+
+from logix_mcp._common import (
+    MCPEventLogger,
+    _opened,
+    _resolve,
+    _run,
+    mcp,
+    preflight_output_path,
+    preflight_project_path,
+)
+from logix_mcp._xml import _fmt_table, _l5x_quick_open_summary
+
+
+_PROJECT_EXTS = {".ACD", ".L5X", ".L5K"}
+
+
+@mcp.tool()
+async def open_project(path: str, sdk_open: bool = False) -> str:
+    """Open a Logix project. ``.L5X`` defaults to a fast lxml peek; pass ``sdk_open=True`` for a full SDK open. ``.ACD`` always uses the SDK."""
+    pf = preflight_project_path(path)
+    if pf:
+        return pf
+
+    async def _do() -> str:
+        p = _resolve(path)
+        if p.suffix.lower() == ".l5x" and not sdk_open:
+            return _l5x_quick_open_summary(p)
+        async with _opened(p) as proj:
+            comm = ""
+            try:
+                comm = await proj.get_communications_path()
+            except Exception:  # noqa: BLE001 -- SDK may reject when no comm path set
+                comm = "(not set)"
+            return (
+                f"[OK] Opened {p}\n"
+                f"Mode: full SDK open\n"
+                f"CommunicationsPath: {comm or '(not set)'}"
+            )
+
+    return await _run("open_project", _do, path=path, sdk_open=sdk_open)
+
+
+@mcp.tool()
+async def save_project(path: str, output: str = "") -> str:
+    """Save the project. With no ``output`` calls ``save()``; otherwise ``save_as`` (``detailed_l5x`` flips on for ``.L5X`` outputs)."""
+    pf = preflight_project_path(path)
+    if pf:
+        return pf
+    if output:
+        pf = preflight_output_path(output, _PROJECT_EXTS)
+        if pf:
+            return pf
+
+    async def _do() -> str:
+        p = _resolve(path)
+        async with _opened(p) as proj:
+            if output:
+                out = _resolve(output)
+                await proj.save_as(
+                    str(out),
+                    force=True,
+                    detailed_l5x=out.suffix.lower() == ".l5x",
+                )
+                return f"[OK] Saved {p} -> {out}"
+            await proj.save()
+            return f"[OK] Saved {p}"
+
+    return await _run("save_project", _do, path=path, output=output)
+
+
+@mcp.tool()
+async def export_l5x(path: str, output: str) -> str:
+    """Export the full project to an ``.L5X`` via ``save_as(detailed_l5x=True)``."""
+    pf = preflight_project_path(path)
+    if pf:
+        return pf
+    pf = preflight_output_path(output, {".L5X"})
+    if pf:
+        return pf
+
+    async def _do() -> str:
+        p = _resolve(path)
+        out = _resolve(output)
+        async with _opened(p) as proj:
+            await proj.save_as(str(out), force=True, detailed_l5x=True)
+        return f"[OK] Exported {p} -> {out}"
+
+    return await _run("export_l5x", _do, path=path, output=output)
+
+
+@mcp.tool()
+async def read_l5x(path: str) -> str:
+    """Return an lxml-only summary of a ``.L5X`` file without opening it in the SDK."""
+    pf = preflight_project_path(path)
+    if pf:
+        return pf
+
+    async def _do() -> str:
+        p = _resolve(path)
+        if p.suffix.lower() != ".l5x":
+            raise ValueError("read_l5x requires a .L5X file")
+        return _l5x_quick_open_summary(p)
+
+    return await _run("read_l5x", _do, path=path)
+
+
+@mcp.tool()
+async def convert_project(path: str, major_revision: int, output: str) -> str:
+    """Convert between ``.ACD`` / ``.L5X`` / ``.L5K`` for a target major revision via ``LogixProject.convert`` + ``save_as``."""
+    pf = preflight_project_path(path)
+    if pf:
+        return pf
+    pf = preflight_output_path(output, _PROJECT_EXTS)
+    if pf:
+        return pf
+
+    async def _do() -> str:
+        p = _resolve(path)
+        out = _resolve(output)
+        rev = int(major_revision)
+        proj = await LogixProject.convert(str(p), rev, MCPEventLogger())
+        try:
+            await proj.save_as(
+                str(out),
+                force=True,
+                detailed_l5x=out.suffix.lower() == ".l5x",
+            )
+        finally:
+            proj.close()
+        return f"[OK] Converted {p} -> {out} (major_revision={rev})"
+
+    return await _run(
+        "convert_project",
+        _do,
+        path=path,
+        output=output,
+        major_revision=major_revision,
+    )
+
+
+@mcp.tool()
+async def create_new_project(
+    output: str,
+    major_revision: int,
+    processor_type: str,
+    controller_name: str,
+) -> str:
+    """Create a new ``.ACD`` project for ``processor_type`` at ``major_revision`` via ``LogixProject.create_new_project``.
+
+    Discover valid ``processor_type`` values by calling
+    ``get_processor_types(major_revision=<rev>)`` first; pass the ``Name``
+    column verbatim (e.g. ``"1756-L85E"``, ``"5069-L320ERMS3"``). Pass an
+    integer major revision Logix Designer is installed for (e.g. ``37``).
+    """
+    pf = preflight_output_path(output, {".ACD"})
+    if pf:
+        return pf
+
+    async def _do() -> str:
+        out = _resolve(output)
+        rev = int(major_revision)
+        ptype = str(processor_type).strip()
+        cname = str(controller_name).strip()
+        if not ptype:
+            raise ValueError("processor_type is empty")
+        if not cname:
+            raise ValueError("controller_name is empty")
+        proj = await LogixProject.create_new_project(
+            str(out), rev, ptype, cname, MCPEventLogger()
+        )
+        try:
+            await proj.save()
+        finally:
+            proj.close()
+        return (
+            f"[OK] Created {out} (major_revision={rev}, "
+            f"processor_type={ptype}, controller_name={cname})"
+        )
+
+    return await _run(
+        "create_new_project",
+        _do,
+        output=output,
+        major_revision=major_revision,
+        processor_type=processor_type,
+        controller_name=controller_name,
+    )
+
+
+@mcp.tool()
+async def get_processor_types(major_revision: int) -> str:
+    """Enumerate every legal ``processor_type`` for ``create_new_project`` / ``change_controller_type`` at the given Logix Designer major revision.
+
+    Returns a ``Name | ProductCode | ProductType | Id`` table. The ``Name``
+    column is what you pass back as ``processor_type``. Common ``major_revision``
+    values: 33, 34, 35, 36, 37 (must be installed in Studio 5000).
+    An empty result means that major revision is not installed on this machine.
+    """
+
+    async def _do() -> str:
+        rev = int(major_revision)
+        items = await LogixProject.get_processor_types(rev)
+
+        # SDK returns ``dict[str, ProcessorType]`` keyed by name. The
+        # ``ProcessorType`` named tuple exposes ``name`` / ``product_code`` /
+        # ``product_type`` / ``id``. Iterating ``items`` (without .items())
+        # would yield the keys only and silently render empty rows -- which
+        # caused early callers to misread the table as "0 processors".
+        rows: list[tuple[str, str, str, str]] = []
+        if isinstance(items, dict):
+            entries = list(items.values())
+        else:
+            entries = list(items or [])
+        for it in entries:
+            rows.append(
+                (
+                    str(_field(it, "name", "Name")),
+                    str(_field(it, "product_code", "ProductCode")),
+                    str(_field(it, "product_type", "ProductType")),
+                    str(_field(it, "id", "Id")),
+                )
+            )
+        if not rows:
+            return (
+                f"[OK] get_processor_types(major_revision={rev}) returned 0 "
+                f"processors. Confirm Logix Designer {rev} is installed."
+            )
+        table = _fmt_table(rows, ("Name", "ProductCode", "ProductType", "Id"))
+        return (
+            f"[OK] Processor types for major_revision={rev} "
+            f"(count={len(rows)}):\n{table}"
+        )
+
+    return await _run(
+        "get_processor_types", _do, major_revision=major_revision
+    )
+
+
+def _field(obj: object, *names: str) -> object:
+    """Return the first attribute / mapping key match across ``names``."""
+    for n in names:
+        v = getattr(obj, n, None)
+        if v is not None:
+            return v
+    if isinstance(obj, dict):
+        for n in names:
+            if n in obj:
+                return obj[n]
+    return ""
+
+
+__all__ = [
+    "open_project",
+    "save_project",
+    "export_l5x",
+    "read_l5x",
+    "convert_project",
+    "create_new_project",
+    "get_processor_types",
+]
+
+
+# Reference for type checkers — make Path import explicit so future contributors
+# notice that ``_resolve`` always returns a ``Path``.
+_: type = Path

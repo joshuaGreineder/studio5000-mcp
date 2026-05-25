@@ -1,0 +1,6 @@
+# Use Python 3.12.x — logix_designer_sdk 2.0.1 requires >=3.12,<3.13.
+# Install official SDK from Rockwell path first, then: pip install -r requirements.txt
+# pip install "C:\Users\Public\Documents\Studio 5000\Logix Designer SDK\python\logix_designer_sdk-2.0.1-py3-none-any.whl"
+mcp>=1.0
+fastmcp>=3.0
+lxml>=5.0

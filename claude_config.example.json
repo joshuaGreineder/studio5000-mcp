@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "studio5000-mcp": {
+      "command": "py",
+      "args": [
+        "-3.12",
+        "-u",
+        "C:\\path\\to\\studio5000-mcp\\l5x_acd_server.py"
+      ],
+      "cwd": "C:\\path\\to\\studio5000-mcp"
+    }
+  }
+}
